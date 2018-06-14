@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -eu
+export SHELLOPTS
+HERE=$(dirname "${BASH_SOURCE[0]}")
+
+# download sources
+src=$(nix-build -A src backend.nix --no-out-link)
+
+# recalculate nix dependencies from python dependencies
+# errors in requirements: add -e before git, add #egg=markdown to Markdown
+# their markdown is somehow broken, pypi2nix (pip?) cannot figure out version (so let's markdown ourselves on a side)
+new_reqs=$(mktemp --suffix .txt)
+trap "rm -rf \"$new_reqs\"" EXIT ERR INT TERM QUIT
+cp "$src/requirements.txt" "$new_reqs"
+# Let's fix some crap in the original dependencies/requirements (if you have access to source, you can fix it directly there instead of this crazy script)
+sed -i -e 's/^git/-e git/; s/pglocks.git/pglocks.git#egg=django_pglocks/; /markdown/d; /pglocks/a markdown==2.6.11' "$new_reqs"
+# let's add missing dependency to the list of libs (looks like sampledata has implicit dependencies)
+sed -i -e '$aversiontools>=1.8' "$new_reqs"
+# idna is detected with latest version, but that does not work with "requests" so we have to set lower version
+sed -i -e '$aidna==2.5' "$new_reqs"
+# asana requires requests-oauthlib but >=6.1 and ==6.*, but taiga has hardcoded 0.8 - probably pip is reinstalling it when "pip install" happens but nobody noticed yet :], same for requests :/
+sed -i -e 's/requests-oauthlib.*/requests-oauthlib==0.6.*,>=0.6.1/' "$new_reqs"
+sed -i -e 's/requests==.*/requests==2.14.*/' "$new_reqs"
+# there are also some changes in requirements_override to fix depenendices and cycle in requirements
+cat "$new_reqs"
+
+cd "$HERE"
+set +u
+pypi2nix -V 3.6 \
+  "-E pkgconfig zlib libjpeg openjpeg libtiff freetype lcms2 libwebp tcl" \
+  -E zlib \
+  -E gcc \
+  -E libffi \
+  -E postgresql \
+  -E openssl \
+  -E libxml2 \
+  -E libxslt \
+  -r "$new_reqs" \
+  -v
